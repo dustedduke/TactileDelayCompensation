@@ -1,0 +1,161 @@
+#include "layer.h"
+
+Layer::Layer(int units, ActivationFunction* activationFunction, float learningRate, float momentumRate) {
+    this->units = units;
+    this->activationFunction = activationFunction;
+    this->learningRate = learningRate;
+    this->momentumRate = momentumRate;
+
+    // Создание activation, производной и delta на основе int units
+    this->activation = MemoryBlock(units);
+    this->activationDerivative = MemoryBlock(units);
+    this->delta = MemoryBlock(units);
+
+    // Инициализация activation производной и delta
+    this->activation.Fill(0);
+    this->activationDerivative.Fill(0);
+    this->delta.Fill(0);
+
+    this->inputUnits = 0;
+}
+
+void Layer::ProjectTo(Layer* destinationLayer) {
+    if (destinationLayer == NULL) {
+        throw std::logic_error("Invalid destination layer!");
+    }
+
+    //Почему нельзя рекуррентные соединения???
+    if (this == destinationLayer) {
+        throw std::logic_error("Recurrent connections are not allowed!");
+    }
+
+
+    //Добавляем следующий слой в connectionsOut этого слоя и этот слой в connectionsIn след слоя
+    this->connectionsOut.push_back(destinationLayer);
+    destinationLayer->connectionsIn.push_back(this); //Push_back() - добавление нового элемента в конец вектора
+
+    //weights are stored in one memory block, therefore offsets have to be stored
+
+    // !! bias и offset одно и то же - смещение результата на опр значение
+
+    this->outputWeightsOffsets.push_back(destinationLayer->inputUnits);
+    destinationLayer->inputWeightsOffsets.push_back(destinationLayer->inputUnits);
+    destinationLayer->inputUnits += this->units;
+
+    //expand weights memory block
+
+    //Создание весов каждый с каждым units * destinationLayer->units
+
+    destinationLayer->weights = MemoryBlock(destinationLayer->weights.size + this->units * destinationLayer->units);
+    destinationLayer->weightsDelta = MemoryBlock(destinationLayer->weightsDelta.size + this->units * destinationLayer->units);
+
+    //generate random weights
+
+    // Случайное равномерное распределение от -0,25 до 0,25 через функцию в MemoryUnit
+
+    destinationLayer->weights.GenerateUniform(-0.25, 0.25);
+    destinationLayer->weightsDelta.Fill(0);
+}
+
+
+//Просто копирование значений из входного слоя??
+void Layer::SetActivation(const MemoryUnit &input) {
+    if (input.size != activation.size) {
+        throw std::logic_error("Invalid input size!");
+    }
+
+    for (int i = 0; i < units; i++) {
+        activation.data[i] = input.data[i];
+    }
+}
+
+void Layer::GetActivation(MemoryUnit &output) {
+    if (output.size != activation.size) {
+        throw std::logic_error("Invalid output size!");
+    }
+
+    for (int i = 0; i < units; i++) {
+        output.data[i] = activation.data[i];
+    }
+}
+
+
+
+// !!!!!!!!!!!!!
+// Вычисление весов (активаций) для всех значений данного слоя, переданных предыдущими слоями * веса
+
+void Layer::PropagateForward() {
+    //for every unit
+    for (int to = 0; to < units; to++) {
+        float weightedSum = 0.0f;
+
+        //loop through all input layers
+        for (int layer = 0; layer < connectionsIn.size(); layer++) {
+            //loop through all their units
+            for (int from = 0; from < connectionsIn[layer]->units; from++) {
+                //calculate weighted sum of activations of input layer units
+                weightedSum += connectionsIn[layer]->activation.data[from] * weights.data[to * inputUnits + inputWeightsOffsets[layer] + from];
+            }
+        }
+
+        // !!!!!
+        //apply activation function to the weighted sum
+        activation.data[to] = (*activationFunction)(weightedSum);
+        activationDerivative.data[to] = (*activationFunction).Derivative(weightedSum);
+    }
+}
+
+
+
+
+// Вычисление разности целевого значения от полученного???
+
+void Layer::SetTarget(const MemoryBlock& target) {
+    if (target.size != delta.size) {
+        throw std::logic_error("Target doesn't match layer size!");
+    }
+
+    target.CopyTo(delta);
+    delta.Subtract(activation);
+    delta.Multiply(activationDerivative);
+}
+
+void Layer::PropagateBackward() {
+    //loop through all units
+    for (int from = 0; from < units; from++) {
+        float weightedSum = 0.0f;
+
+        //loop through all output layers
+        for (int layer = 0; layer < connectionsOut.size(); layer++) {
+            //loop through all their units
+            for (int to = 0; to < connectionsOut[layer]->units; to++) {
+                //calculate weighted sum of error of output layer units
+                weightedSum += connectionsOut[layer]->delta.data[to] * connectionsOut[layer]->weights.data[to * connectionsOut[layer]->inputUnits + outputWeightsOffsets[layer] + from];
+            }
+        }
+
+        delta.data[from] = activationDerivative.data[from] * weightedSum;
+    }
+
+    //std::cout << ' ' << error.SquareSum() << std::endl;
+}
+
+
+
+// ???????
+
+void Layer::UpdateWeights() {
+    //loop through all input layers
+    for (int layer = 0; layer < connectionsIn.size(); layer++) {
+        //loop through all units
+        for (int to = 0; to < units; to++) {
+            //loop through all input layer units
+            for (int from = 0; from < connectionsIn[layer]->units; from++) {
+                //adjust connection weight
+                int weightId = to * inputUnits + inputWeightsOffsets[layer] + from;
+                weightsDelta.data[weightId] = momentumRate * weightsDelta.data[weightId] + learningRate * delta.data[to] * connectionsIn[layer]->activation.data[from];
+                weights.data[weightId] += weightsDelta.data[weightId];
+            }
+        }
+    }
+}
